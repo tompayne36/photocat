@@ -1,0 +1,239 @@
+Here’s a **Product Requirement Document (PRD)** draft for **PhotoCat**, based on everything we’ve designed and iterated together. I’ve structured it like a professional PRD so you can extend or share it as needed.
+
+---
+
+# Product Requirement Document (PRD)
+
+**Product Name:** PhotoCat
+**Author:** Tom Payne & ChatGPT
+**Date:** August 2025
+**Version:** v1.0
+
+---
+
+## 1. Purpose
+
+PhotoCat is a desktop utility designed to help users consolidate, organize, and de-duplicate large photo and video collections scattered across multiple drives and folders. Many users face issues with duplicates, inconsistent folder structures, and missing metadata. PhotoCat provides a structured workflow to:
+
+* **Catalog** files across multiple root folders.
+* **Identify duplicates** using both file-level and (optionally) content-level hashes.
+* **Propose a normalized structure** for consolidation (date-based folders, tags derived from context).
+* **Export proposals** for review and audit.
+* **Execute consolidation** safely by copying or hardlinking files.
+* **Quarantine** redundant originals for safe deletion.
+
+The end result is a **clean, consolidated photo library** ready for use with modern tools like **Immich**, **Digikam**, or cloud photo platforms.
+
+---
+
+## 2. Goals and Non-Goals
+
+### Goals
+
+1. Provide a **repeatable workflow** for photo consolidation.
+2. Ensure **data safety**: no destructive actions without explicit user approval.
+3. Detect duplicates using **SHA-256 file hashes**, and optionally **content hashes** that ignore metadata.
+4. Derive **tags** from folder structure (for “sorted” roots).
+5. Create **proposed layouts** in a standardized form (`YYYY/YYYY-MM-DD/filename.ext`).
+6. Support **export to CSV** for manual review and auditing.
+7. Provide **execution options**: copy (default) or hardlink.
+8. Append **tags into EXIF/IPTC/XMP** fields (optional, using ExifTool).
+9. Provide **progress indicators** for all major steps (scan, hash, propose, execute, quarantine).
+10. Enable **safe cleanup** through quarantine before permanent deletion.
+
+### Non-Goals
+
+* Real-time synchronization with cloud photo services.
+* Automated face recognition or AI tagging.
+* UI/GUI application (initial release is CLI only).
+* Image editing, resizing, or format conversion.
+
+---
+
+## 3. Target Users
+
+* **Home users** with scattered personal photo collections across drives and folders.
+* **Power users** managing large archives (25,000–100,000+ files).
+* **Archivists/Photographers** who want safe de-duplication and structured storage.
+
+---
+
+## 4. Key Features
+
+### 4.1 Scanning & Cataloging
+
+* Catalogs files into an **SQLite database**.
+* Supports **sorted roots** (folder names become tags) and **unsorted roots** (no tags from folders).
+* Records root directories in `scan_root` for auditing and repeatability.
+* Uses **file extension filters** to identify photos/videos.
+
+### 4.2 Hashing & Duplicate Detection
+
+* **File hash (SHA-256)**: computed on entire file contents.
+* **Content hash (optional)**: computed on pixel data (via ExifTool `-b -ImageData`), ignoring metadata.
+* Groups duplicates into `dup_group` (file-hash) and `dup_group_image` (content-hash).
+* Safe to stop/resume; commits every 300–500 files.
+
+### 4.3 Propose Consolidated Layout
+
+* Normalizes storage into `LibraryRoot/YYYY/YYYY-MM-DD/filename.ext`.
+* Chooses a **canonical file** per duplicate group based on:
+
+  1. Extension priority (RAW > HEIC > JPEG > others).
+  2. File size.
+  3. Path order.
+* Extracts **capture date** via ExifTool (fallback to file mtime).
+* Derives **tags** from folder hierarchy for “sorted” roots.
+* Stores results in `plan` table.
+* Shows **progress bar** while processing groups.
+
+### 4.4 Export for Review
+
+* Exports `plan` table to **CSV**.
+* Supports two modes:
+
+  * **Chosen files only** (one per duplicate group).
+  * **All candidates** (audit all duplicates).
+* Columns: `sha256`, `chosen_path`, `dest_path`, `dest_dir`, `dest_filename`, `capture_dt`, `tags`, `candidate_count`.
+
+### 4.5 Execute Consolidation
+
+* By default: **copies files** into consolidated library.
+* Optionally: **hardlinks** if `--use-hardlinks` is passed.
+* Options:
+
+  * `--verify`: re-hash destination and compare against original.
+  * `--write-tags`: append derived tags into EXIF/IPTC/XMP fields.
+  * `--limit`: process only N items for testing.
+* Writes results into `op_log`.
+* Provides **progress bar**.
+
+### 4.6 Quarantine & Cleanup
+
+* Moves redundant originals to a **quarantine tree** (mirrors original structure).
+* Safe by default: dry-run mode logs planned moves.
+* Requires `--execute` to actually move files.
+* Verifies file safety using inode or SHA-256 match.
+* Supports `--limit` for partial runs.
+
+### 4.7 Roots Audit
+
+* `roots` command displays:
+
+  * Mode (`sorted` / `unsorted`)
+  * File count
+  * Last scanned timestamp
+  * Root path
+
+---
+
+## 5. Architecture
+
+* **Core:** Python 3.11+
+* **Database:** SQLite (single-file DB, WAL mode enabled)
+* **External Tool:** [ExifTool](https://exiftool.org/) (for metadata extraction and tag writing)
+* **Filesystem:** Supports Windows (NTFS) and Unix-like systems. Hardlink support depends on filesystem/volume.
+
+### Schema Highlights
+
+* `media_file`: tracks files, hashes, tags, metadata.
+* `dup_group` / `dup_member`: groups duplicates by file-hash.
+* `dup_group_image` / `dup_member_image`: groups duplicates by content-hash.
+* `plan`: proposed moves and tags.
+* `op_log`: detailed logs of operations.
+* `scan_root`: history of scanned roots.
+
+---
+
+## 6. CLI Commands
+
+### `scan`
+
+```powershell
+python photocat.py --db index.db scan --sorted "F:\Photos" --unsorted "F:\PhoneDump"
+```
+
+### `hash`
+
+```powershell
+python photocat.py --db index.db hash
+```
+
+### `hash-content` (optional)
+
+```powershell
+python photocat.py --db index.db hash-content
+```
+
+### `propose`
+
+```powershell
+python photocat.py --db index.db propose --library-root "E:\PhotoLibrary"
+```
+
+### `export`
+
+```powershell
+python photocat.py --db index.db export --csv proposed_layout.csv
+```
+
+### `execute`
+
+```powershell
+python photocat.py --db index.db execute --library-root "E:\PhotoLibrary" --verify --write-tags
+```
+
+### `quarantine`
+
+```powershell
+python photocat.py --db index.db quarantine --quarantine "E:\Quarantine" --execute
+```
+
+### `roots`
+
+```powershell
+python photocat.py --db index.db roots
+```
+
+---
+
+## 7. Risks & Mitigations
+
+* **Risk:** Duplicate detection fails due to metadata differences.
+
+  * *Mitigation:* Optional content-hash mode.
+* **Risk:** Users accidentally overwrite originals.
+
+  * *Mitigation:* Default to copy, never modify source files.
+* **Risk:** Very large datasets (100k+ files) take too long.
+
+  * *Mitigation:* Batch commits, progress bars, `--limit` for testing.
+* **Risk:** ExifTool missing or fails.
+
+  * *Mitigation:* Fall back to file modified time for capture date.
+
+---
+
+## 8. Future Enhancements
+
+* GUI frontend for non-technical users.
+* AI-based auto-tagging (faces, places, objects).
+* Cloud sync integration (Google Photos, OneDrive, iCloud).
+* Support for distributed/parallel hashing across multiple machines.
+* Deduplication of near-duplicates (perceptual hashing).
+
+---
+
+## 9. Acceptance Criteria
+
+* Able to scan, hash, propose, and export CSV for a dataset of 50k+ files within reasonable time.
+* Propose step creates valid `dest_path` values (by year/date).
+* Execute copies files into correct structure, with optional tag writing.
+* Quarantine moves redundant files without loss of data.
+* All commands display **progress indicators**.
+
+---
+
+✅ This PRD captures the current state of **PhotoCat** as we’ve designed it together.
+
+Would you like me to generate this as a **downloadable Word/PDF file** (so you can share with others), or keep it Markdown for now?
